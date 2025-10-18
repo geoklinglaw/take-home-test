@@ -15,11 +15,24 @@ type ClassifyParams struct {
 }
 
 type ClassifyResponse struct {
-	Intent         common.Intent `json:"intent"`
-	InterestedTime *time.Time    `json:"interestedTime"`
-	CallBackTime   *time.Time    `json:"callBackTime"`
+	Intent         common.Intent  `json:"intent"`
+	Verdict 	   string         `json:"verdict"`
+	InterestedTime *time.Time     `json:"interestedTime,omitempty"`
+	CallBackTime   *time.Time     `json:"callBackTime,omitempty"`
+	Evidence 	   []string 	  `json:"evidence"`
+	NeedsReview    bool    		  `json:"needsReview"`
+	DecisionReason DecisionReason `json:"decisionReason,omitempty"`
+	Flags 		   []Flag `json:"flags,omitempty"`
 }
 
 type ClassifierInterface interface {
 	Classify(ctx context.Context, senv *svc.Env, params ClassifyParams) (*ClassifyResponse, error)
 }
+
+type firstCall struct {
+	Intent         common.Intent  `json:"intent"`
+	Verdict        string   	  `json:"verdict"`
+	Evidence       []string 	  `json:"evidence"`
+	AgreedDatetime string  		  `json:"agreedDatetime"`
+}
+

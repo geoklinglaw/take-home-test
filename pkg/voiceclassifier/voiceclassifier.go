@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/sashabaranov/go-openai"
@@ -27,6 +28,30 @@ Read the transcripts carefully and classify the call transcript into the followi
 - 'voice_wants_whatsapp_sms_follow_up': The user wished to follow up through instant messaging, such as via Whatsapp or SMS.
 - 'voice_voice_mail': The call goes into an automated reply or a voice mail. Reply does not come from an actual user.
 - 'voice_unknown': Anything that does not fit into the above categories.
+
+Verdict rules (about your own label choice):
+- "supported"     : You can quote clear User: evidence that directly satisfies the label definition.
+- "insufficient"  : You cannot find clear, explicit User: evidence for any label above.
+- "contradicted"  : The strongest User: quotes point to a different label than the one you would pick.
+
+Evidence rules:
+- Return 1–3 "User:" quotes that justify the intent.
+- Quotes MUST start with "User:" and be verbatim substrings from the transcript.
+- Do NOT include agent lines.
+- Keep quotes short but complete.
+
+Time rules (agreedDatetime):
+- If the USER explicitly agrees to a specific callback/meeting time/date, output it as "YYYY-MM-DDTHH:MM:SS" (no timezone).
+- Use the provided "ConversationLocalTime" as the reference for resolving relative dates like "tomorrow" or day-of-week.
+- If there is NO explicit user-agreed time, output "null". Do NOT guess.
+
+Return exact JSON:
+{
+  "intent": "voice_*",
+  "verdict": "supported" | "insufficient" | "contradicted",
+  "evidence": ["User: ...", "..."],
+  "agreedDatetime": "YYYY-MM-DDTHH:MM:SS" | "null"
+}
 `
 
 const classifyUserPrompt = `
@@ -78,8 +103,8 @@ type Classifier struct{}
 var _ ClassifierInterface = (*Classifier)(nil)
 
 func (c *Classifier) Classify(ctx context.Context, senv *svc.Env, params ClassifyParams) (*ClassifyResponse, error) {
-	ret := &ClassifyResponse{
-		Intent: common.IntentVoiceUnknown,
+	if pre, hit := runPrefilters(params.Transcript); hit {
+		return pre, nil
 	}
 
 	messages := []openai.ChatCompletionMessage{
@@ -103,12 +128,22 @@ func (c *Classifier) Classify(ctx context.Context, senv *svc.Env, params Classif
 	if err != nil {
 		return nil, errors.Wrap(err, "openai create chat completion")
 	}
-	var result1 map[string]interface{}
+	var result1 firstCall
 	if err := json.Unmarshal([]byte(resp.Choices[0].Message.Content), &result1); err != nil {
 		return nil, errors.Wrap(err, "fail to parse response")
 	}
-	if intent, ok := result1["intent"].(string); ok {
-		ret.Intent = common.Intent(intent)
+
+	ret := &ClassifyResponse{
+		Intent:   common.Intent(fc.Intent),
+		Verdict:  fc.Verdict,
+		Evidence: append([]string(nil), fc.Evidence...),
+	}
+
+	if ret.Verdict == "" {
+		ret.Verdict = "insufficient"
+	}
+	if !applyVerdictEvidenceGates(params.Transcript, ret) {
+		return ret, nil
 	}
 
 	if ret.Intent == common.IntentVoiceInterested || ret.Intent == common.IntentVoiceWantsCallBack {
@@ -167,4 +202,45 @@ func (c *Classifier) Classify(ctx context.Context, senv *svc.Env, params Classif
 		}
 	}
 	return ret, nil
+}
+
+
+func applyVerdictEvidenceGates(transcript string, ret *ClassifyResponse) bool {
+	// verdict must be supported
+	switch ret.Verdict {
+	case "supported":
+	case "insufficient":
+		ret.NeedsReview = true
+		ret.DecisionReason = DecisionVerdictInsufficient
+		return false
+	case "contradicted":
+		ret.NeedsReview = true
+		ret.DecisionReason = DecisionVerdictContradicted
+		return false
+	default:
+		ret.NeedsReview = true
+		ret.DecisionReason = DecisionVerdictInsufficient
+		return false
+	}
+
+	// evidence must be present and has "User:"" quotes
+	if len(ret.Evidence) == 0 {
+		ret.NeedsReview = true
+		ret.DecisionReason = DecisionNoEvidence
+		return false
+	}
+	for _, q := range ret.Evidence {
+		if !strings.HasPrefix(q, "User:") {
+			ret.NeedsReview = true
+			ret.DecisionReason = DecisionBadEvidenceNotUser
+			return false
+		}
+		if !strings.Contains(transcript, q) {
+			ret.NeedsReview = true
+			ret.DecisionReason = DecisionEvidenceNotInTranscript
+			return false
+		}
+	}
+
+	return true
 }
