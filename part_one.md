@@ -1,60 +1,38 @@
 ## 1. Polling Changes
 
-The current implementation performs classification every **5 seconds**.
+The current implementation is to do classification every 5s.
 
-I would recommend **reducing the polling frequency**. For example, it could be adjusted based on the timezone — during night hours, polling can be paused or slowed since the likelihood of incoming calls is low.
+I would reduce the polling frequency. Since the classification isn’t needed immediately (most of the time? Unless the scheduled call is a while later <1h), we can batch process it every x hour rather than such at such high frequency of 5s. 
 
-However, upon further consideration, since classification doesn’t need to be immediate, a **batch processing** approach (e.g., every few hours) would be more efficient than relying on timezone-based scheduling. This avoids additional complexity in determining time periods and tracking active hours, assuming there’s no business-critical need for real-time classification.
+Also, I would put the polling frequency in config.yaml to keep things separated.
 
-Additionally, the **polling frequency** should be moved into `config.yaml` to maintain clean configuration separation.
-
-Instead of continuous polling, an **event-driven architecture** could be implemented — classification should trigger whenever a new call is created. Given the current codebase structure (where there’s no central orchestrator), directly calling the classification after saving the voice call in `xxxx.go` would introduce tight coupling. 
-
-To maintain **separation of concerns** and modularity, an **event-driven system** (e.g., using a Redis Pub/Sub mechanism) could be used. This could be introduced in a future PR as part of broader improvements.
+Instead of polling, I would make it event driven where I only do classification every time there’s a new call, but this could be done in a separate PR or as part of future improvements. 
 
 ---
 
 ## 2. Reclassification of All Calls in an Unclassified Thread
 
-The current logic assumes that if a thread is marked as `voice_call_unclassified`, all its calls are unclassified and must be processed. It does **not check if individual calls are already classified**, which leads to reclassification of some calls and results in **duplicate or conflicting records**.
+The current logic assumes that if a thread is marked as `voice_call_unclassified`, then all its calls are unclassified and needs to be processed. It does not check if a call already has a classification, so it reclassifies calls within a thread, of which some were already classified, resulting in duplicate or conflicting records. 
 
-In practice, a thread may have multiple calls over time, with some already classified and others not. We should **only classify unclassified calls**.
+In real-world scenarios, a thread may have multiple calls over time, with some already classified and others not. We should only classify calls that haven’t been classified. We should add an additional check on whether a call is classified by using `CampaignThreadID` and `CalledAt` to identify a specific `VoiceCall` and check it against `Classifications` table, before classifying it. 
 
-To fix this, before classifying, we should:
-- Use `CampaignThreadID` and `CalledAt` to identify a specific `VoiceCall`.
-- Check if it already exists in the `Classifications` table.
 
-This ensures:
-- Each call is only classified once.
-- Duplicate and conflicting classifications are avoided.
-- Unnecessary reprocessing is minimized.
+This would should additional classification checks, reducing duplicated classifications and prevent possible conflicting classifications, ensuring each call is only classified once.
 
----
+----
 
 ## 3. Error Handling When Classifying Calls
 
-Currently, the code processes each call in a loop and **returns immediately upon failure**. As a result:
-- Remaining calls in the thread are not processed.
-- Some `Classification` records may already be inserted for earlier calls.
-- Retries could lead to **duplicate records**.
+The current code processes each call in a loop based on a thread and returns immediately if the call fails. As a result, the other calls in the thread are not processed and `Classification` records would have been inserted for previously classified calls. This would cause duplicated records when this thread undergoes classification in further retries.
 
-This issue would be mitigated by **Solution 2** (checking for unclassified calls before classification), but additionally:
-- The classification loop should handle errors gracefully and continue processing subsequent calls.
-- Failures should be logged and retried later without aborting the entire thread’s classification.
+This would not be an issue if we adopt problem 2’s solution by adding a check for unclassified calls.
 
 ---
 
 ## 4. Each Classification Record Update as a Single DB Transaction
 
-The current implementation separates:
-1. Insertion of `Classification` records.
-2. Updating of the thread’s status.
+The current code separates inserting `Classification` records and updating thread’s status into two DB calls. if something fails after classifying some calls but before updating the thread status, it might cause a discrepancy the classification and thread status.
 
-If a failure occurs between these steps, it can lead to **inconsistent state** — some classifications may be recorded, but the thread remains unupdated.
-
-To prevent this:
-- Use a **single database transaction** per thread classification.
-- Wrap all related DB operations (inserting `Classification` records and updating thread status) within one transaction.
-- Roll back the transaction entirely upon any failure to ensure data consistency.
+Instead, I would use a single database transaction for all DB changes related to a thread where the insertion of `Classification` records and updating the status are within one transaction such that the transaction is rolled back if it fails and the system remains consistent.
 
 ---
