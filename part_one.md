@@ -4,7 +4,7 @@ The current implementation is to do classification every 5s.
 
 I would reduce the polling frequency. Since the classification isn’t needed immediately (most of the time? Unless the scheduled call is a while later <1h), we can batch process it every x hour rather than such at such high frequency of 5s. 
 
-Also, I would put the polling frequency in config.yaml to keep things separated.
+Also, I would put the polling frequency in `config.yaml` to keep things separated.
 
 Instead of polling, I would make it event driven where I only do classification every time there’s a new call, but this could be done in a separate PR or as part of future improvements. 
 
@@ -12,12 +12,11 @@ Instead of polling, I would make it event driven where I only do classification 
 
 ## 2. Reclassification of All Calls in an Unclassified Thread
 
-The current logic assumes that if a thread is marked as `voice_call_unclassified`, then all its calls are unclassified and needs to be processed. It does not check if a call already has a classification, so it reclassifies calls within a thread, of which some were already classified, resulting in duplicate or conflicting records. 
+The current logic assumes that if a thread is marked as `voice_call_unclassified`, then all its calls are unclassified and needs to be processed. It does not check if a call already has a classification, so it reclassifies all calls within a thread, of which some were already classified, resulting in duplicate or conflicting records. 
 
-In real-world scenarios, a thread may have multiple calls over time, with some already classified and others not. We should only classify calls that haven’t been classified. We should add an additional check on whether a call is classified by using `CampaignThreadID` and `CalledAt` to identify a specific `VoiceCall` and check it against `Classifications` table, before classifying it. 
+In real-world scenarios, a thread may have multiple calls over time, with some already classified and others not. We should only classify calls that haven’t been classified. 
 
-
-This would should additional classification checks, reducing duplicated classifications and prevent possible conflicting classifications, ensuring each call is only classified once.
+We can add an additional check on whether a call is classified by using `CampaignThreadID` and `CalledAt` to identify a specific `VoiceCall` and check it against `Classifications` table, before classifying it. This would prevent duplicated classifications and possible conflicting classifications, ensuring each call is only classified once.
 
 ----
 
